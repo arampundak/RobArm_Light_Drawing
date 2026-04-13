@@ -26,12 +26,12 @@
          contype/conaffinity=0 → no physics collision. -->
   
     <!-- DRAWING PLANE AUTO-GENERATED -->
-    <geom name="drawing_plane" type="box" size="0.06 0.003 0.06" pos="0.0565 -0.2070 0.3022" rgba="0.4 0.8 1.0 0.2" contype="0" conaffinity="0"/>
+    <!-- geom name="drawing_plane" type="box" size="0.06 0.003 0.06" pos="0.0565 -0.2070 0.3022" rgba="0.4 0.8 1.0 0.2" contype="0" conaffinity="0"/>
     <geom name="corner_TR" type="sphere" size="0.005" pos="-0.0014 -0.2228 0.3622" rgba="1 0.2 0.2 0.8" contype="0" conaffinity="0"/>
     <geom name="corner_TL" type="sphere" size="0.005" pos="0.1144 -0.1912 0.3622" rgba="0.2 1 0.2 0.8" contype="0" conaffinity="0"/>
     <geom name="corner_BL" type="sphere" size="0.005" pos="0.1144 -0.1912 0.2422" rgba="0.2 0.2 1 0.8" contype="0" conaffinity="0"/>
     <geom name="corner_BR" type="sphere" size="0.005" pos="-0.0014 -0.2228 0.2422" rgba="1 1 0.2 0.8" contype="0" conaffinity="0"/>
-    <geom name="plane_centre" type="sphere" size="0.004" pos="0.0565 -0.2070 0.3022" rgba="1 1 1 0.6" contype="0" conaffinity="0"/>
+    <geom name="plane_centre" type="sphere" size="0.004" pos="0.0565 -0.2070 0.3022" rgba="1 1 1 0.6" contype="0" conaffinity="0"/> -->
     <!-- /DRAWING PLANE AUTO-GENERATED -->
   </worldbody>
 </mujoco>
