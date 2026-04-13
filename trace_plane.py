@@ -1,0 +1,251 @@
+# trace_plane.py
+#
+# SO-ARM100 drawing plane simulation in MuJoCo.
+#
+# Loads a drawing exported from the p5 sketch (drawing.json) and
+# drives the arm along the strokes using damped-least-squares IK.
+#
+# Requires "led_tip" site in so_arm100.xml (inside Fixed_Jaw body):
+#   <site name="led_tip" pos="0 0 0.05" size="0.001"/>
+#
+# USAGE:
+#   mjpython trace_plane.py                   — run built-in test shape
+#   mjpython trace_plane.py drawing.json      — load a p5 drawing
+#
+# CONTROLS:
+#   SPACE  — run/replay the drawing
+#   0      — workspace sweep
+
+import json
+import os
+import sys
+import time
+
+import mujoco
+import mujoco.viewer
+import numpy as np
+
+# ---------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------
+
+SCENE_XML = os.path.join(os.path.dirname(__file__), "scene.xml")
+
+HOME_QPOS = [-0.0576, -2.03, 0.837, 1.08, 0.0837, 0.0]
+
+IK_DT        = 0.05
+IK_DAMPING   = 0.01
+IK_THRESHOLD = 0.005   # 5 mm
+IK_MAX_STEPS = 3000
+
+HALF = 0.06            # half-size → 12 cm × 12 cm plane
+
+DRAW_SLEEP = 0.004
+MOVE_SLEEP = 0.001
+
+GLFW_KEY_SPACE = 32
+GLFW_KEY_0     = 48
+
+
+# ---------------------------------------------------------------------------
+# LOAD DRAWING
+# ---------------------------------------------------------------------------
+
+def load_drawing(json_path):
+    """Load strokes from a p5 export JSON file."""
+    with open(json_path) as f:
+        data = json.load(f)
+    strokes = data["strokes"]
+    total_pts = sum(len(s) for s in strokes)
+    print(f"Loaded {len(strokes)} strokes, {total_pts} points from {json_path}")
+    return strokes
+
+
+def test_drawing():
+    """Built-in test: a triangle + a dot in the centre."""
+    print("Using built-in test drawing (triangle)")
+    return [
+        # Triangle
+        [
+            {"x": 0.5, "y": 0.2},
+            {"x": 0.8, "y": 0.8},
+            {"x": 0.2, "y": 0.8},
+            {"x": 0.5, "y": 0.2},
+        ],
+        # Dot in the middle
+        [
+            {"x": 0.5, "y": 0.55},
+        ],
+    ]
+
+
+def strokes_to_path(strokes, plane_center, half):
+    """
+    Convert normalized 2D strokes to 3D path points on the drawing plane.
+
+    Mapping:
+        nx (0→1)  →  X: plane_center[0] - half  to  + half
+        ny (0→1)  →  Z: plane_center[2] + half  to  - half  (flipped: screen Y-down → world Z-up)
+        Y stays constant at plane_center[1]
+
+    Between strokes: pen_down=False (arm lifts, moves to next start).
+    Within a stroke: pen_down=True (arm draws).
+    """
+    path = []
+    for stroke in strokes:
+        for i, pt in enumerate(stroke):
+            x_3d = plane_center[0] + (pt["x"] - 0.5) * 2 * half
+            z_3d = plane_center[2] + (0.5 - pt["y"]) * 2 * half
+            y_3d = plane_center[1]
+
+            path.append({
+                "x": x_3d,
+                "y": y_3d,
+                "z": z_3d,
+                "pen_down": (i > 0),   # first point of stroke = move (pen up)
+            })
+    return path
+
+
+# ---------------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------------
+
+def main():
+    # Load drawing
+    if len(sys.argv) > 1:
+        strokes = load_drawing(sys.argv[1])
+    else:
+        strokes = test_drawing()
+
+    # Setup model
+    model = mujoco.MjModel.from_xml_path(SCENE_XML)
+    data  = mujoco.MjData(model)
+    data.qpos[:6] = HOME_QPOS
+    mujoco.mj_kinematics(model, data)
+
+    led_site_id = model.site("led_tip").id
+    led_pos = data.site_xpos[led_site_id].copy()
+
+    # Plane: axis-aligned in XZ, at LED's Y depth, top edge at LED height
+    plane_center = np.array([
+        led_pos[0],
+        led_pos[1] - 0.05,
+        led_pos[2] - HALF,
+    ])
+
+    # Convert strokes to 3D path
+    path = strokes_to_path(strokes, plane_center, HALF)
+    print(f"\nPlane centre: [{plane_center[0]*100:.1f}, {plane_center[1]*100:.1f}, {plane_center[2]*100:.1f}] cm")
+    print(f"Plane size: {HALF*200:.0f} × {HALF*200:.0f} cm")
+    print(f"Path: {len(path)} points, {len(strokes)} strokes\n")
+
+    # -----------------------------------------------------------------
+    # IK
+    # -----------------------------------------------------------------
+    def move_to_target(target, label, pen_down=True):
+        jacp = np.zeros((3, model.nv))
+        jacr = np.zeros((3, model.nv))
+
+        for step in range(IK_MAX_STEPS):
+            current = data.site_xpos[led_site_id].copy()
+            error   = target - current
+            dist    = float(np.linalg.norm(error))
+
+            if step % 500 == 0:
+                print(f"  [{label}] step {step:4d} | err: {dist*100:.2f} cm | "
+                      f"pen: {'DOWN' if pen_down else 'UP'}")
+
+            if dist < IK_THRESHOLD:
+                return True
+
+            mujoco.mj_jacSite(model, data, jacp, jacr, led_site_id)
+            J = jacp[:, :6]
+
+            JJT = J @ J.T
+            damped = JJT + (IK_DAMPING ** 2) * np.eye(3)
+            dq = J.T @ np.linalg.solve(damped, error)
+
+            data.qpos[:6] += dq * IK_DT
+
+            for i in range(6):
+                lo, hi = model.jnt_range[i]
+                data.qpos[i] = float(np.clip(data.qpos[i], lo, hi))
+
+            data.ctrl[:6] = data.qpos[:6]
+            mujoco.mj_kinematics(model, data)
+            viewer.sync()
+            time.sleep(DRAW_SLEEP if pen_down else MOVE_SLEEP)
+
+        print(f"  [{label}] max steps | err: {dist*100:.2f} cm")
+        return False
+
+    def execute_path(path_points):
+        for i, pt in enumerate(path_points):
+            target = np.array([pt["x"], pt["y"], pt["z"]])
+            label  = f"pt{i+1}/{len(path_points)}"
+            move_to_target(target, label, pen_down=pt["pen_down"])
+
+    # -----------------------------------------------------------------
+    # Workspace sweep
+    # -----------------------------------------------------------------
+    def sweep_workspace():
+        print("\n=== Workspace sweep ===")
+        reachable = []
+        original_qpos = data.qpos[:6].copy()
+        for _ in range(2000):
+            for i in range(6):
+                lo, hi = model.jnt_range[i]
+                data.qpos[i] = np.random.uniform(lo, hi)
+            mujoco.mj_kinematics(model, data)
+            reachable.append(data.site_xpos[led_site_id].copy())
+        reachable = np.array(reachable)
+        print(f"  X: {reachable[:,0].min()*100:.1f} to {reachable[:,0].max()*100:.1f} cm")
+        print(f"  Y: {reachable[:,1].min()*100:.1f} to {reachable[:,1].max()*100:.1f} cm")
+        print(f"  Z: {reachable[:,2].min()*100:.1f} to {reachable[:,2].max()*100:.1f} cm")
+        print("=== Done ===\n")
+        data.qpos[:6] = original_qpos
+        mujoco.mj_kinematics(model, data)
+        viewer.sync()
+
+    # -----------------------------------------------------------------
+    # Main loop
+    # -----------------------------------------------------------------
+    state = {"run_requested": False, "sweep_requested": False}
+
+    def key_callback(keycode):
+        if keycode == GLFW_KEY_SPACE:
+            state["run_requested"] = True
+        if keycode == GLFW_KEY_0:
+            state["sweep_requested"] = True
+
+    def run_drawing():
+        data.qpos[:6] = HOME_QPOS
+        data.ctrl[:6] = HOME_QPOS[:]
+        mujoco.mj_kinematics(model, data)
+        viewer.sync()
+
+        print("\n=== Drawing start ===\n")
+        execute_path(path)
+        print("\n=== Drawing complete. SPACE to replay. ===\n")
+
+    with mujoco.viewer.launch_passive(model, data,
+                                       key_callback=key_callback) as viewer:
+        mujoco.mj_kinematics(model, data)
+        viewer.sync()
+        print("=== Ready. SPACE = draw, 0 = sweep ===\n")
+
+        while viewer.is_running():
+            if state["run_requested"]:
+                state["run_requested"] = False
+                run_drawing()
+            elif state["sweep_requested"]:
+                state["sweep_requested"] = False
+                sweep_workspace()
+            else:
+                mujoco.mj_kinematics(model, data)
+                viewer.sync()
+
+
+if __name__ == "__main__":
+    main()
