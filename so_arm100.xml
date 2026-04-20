@@ -110,11 +110,15 @@
                 <geom class="finger_collision" name="fixed_jaw_pad_3" size="0.001 0.01 0.007" pos="0.0126 -0.0768 0"/>
                 <geom class="finger_collision" name="fixed_jaw_pad_4" size="0.001 0.01 0.008" pos="0.0143 -0.0572 0"/>
 
-                <!-- LED tip indicator — moves with gripper -->
-                <geom name="led_sphere" type="sphere" size="0.008"
-                      pos="0 0 0.05" rgba="1.0 1.0 0.2 1.0"
+                <!-- LED tip indicator — moves with gripper, this is it! -->
+                <geom name="led_sphere" type="sphere" 
+                      size="0.008"
+                      pos="0 -0.1 0" 
+                      rgba="1.0 1.0 0.2 1.0"
                       contype="0" conaffinity="0"/>
-                      <site name="led_tip" pos="0 0 0.05" size="0.001"/>
+                      <site name="led_tip" 
+                      pos="0 -0.1 0" 
+                      size="0.001"/>
 
                 <!-- X axis — red -->
                 <geom name="gizmo_x" type="cylinder" size="0.002 0.015"
