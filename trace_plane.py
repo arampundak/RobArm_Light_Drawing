@@ -31,20 +31,24 @@ import numpy as np
 # CONFIGURATION
 # ============================================================================
 
-SCENE_XML = os.path.join(os.path.dirname(__file__), "scene.xml")
+SCENE_XML = os.path.join(os.path.dirname(__file__), "scene.xml") #— loads so_arm100.xml and defines the drawing plane
 
 # Starting joint angles (radians) — arm pre-posed near the drawing plane so
 # the IK loop doesn't have to travel far to reach the first stroke.
-HOME_QPOS = [-0.0576, -2.03, 0.837, 1.08, 0.0837, 0.0]
+HOME_QPOS = [-0.0576, -2.03, 0.837, 1.08, 0.0837, 0.0] #— arm pre-posed near the plane, not straight out, to help IK converge to the first stroke, which is near the plane's top edge. These were found by manual tuning: loading the model in the viewer, dragging the arm into a good starting pose, and reading off the qpos from data.qpos.
 
 # IK tuning — damped least squares (see move_to_target for the math).
-IK_DT        = 0.05     # integration step applied to dq each iteration
+IK_DT        = 0.05     # integration step applied to dq each iteration, smaller = more stable but slower convergence, especially on long moves, and more likely to get stuck on IK_THRESHOLD if too small. This is not a real time step, just a numerical integration parameter for the IK loop.
 IK_DAMPING   = 0.01     # λ — larger = more stable near singularities, slower
 IK_THRESHOLD = 0.005    # stop when position error < 5 mm
 IK_MAX_STEPS = 3000     # hard cap per target point
 
-# Drawing plane half-size → 12 cm × 12 cm total.
-HALF = 0.06
+# Drawing plane half-size → 20 cm × 20 cm total.
+HALF = 0.1
+
+# Scale factor for the drawing — 1.0 = default, 1.5 = 50% bigger, etc.
+# Multiplies HALF so the plane (and drawing) grow together.
+DRAW_SCALE = 2.0
 
 # Per-step viewer pacing. DRAW_SLEEP is intentionally slower so the trail
 # has time to appear on screen; MOVE_SLEEP is for pen-up traversals.
@@ -201,17 +205,20 @@ def main():
     led_site_id = model.site("led_tip").id
     led_pos     = data.site_xpos[led_site_id].copy()
 
+    # Apply the scale factor so both the plane outline and stroke mapping grow.
+    half = HALF * DRAW_SCALE
+
     # Plane: axis-aligned in XZ, 5 cm in front of the LED, top edge at LED height.
     plane_center = np.array([
         led_pos[0],
         led_pos[1] - 0.05,
-        led_pos[2] - HALF,
+        led_pos[2] - half,
     ])
 
     # 2D strokes → 3D target list (one dict per waypoint with pen_down flag).
-    path = strokes_to_path(strokes, plane_center, HALF)
+    path = strokes_to_path(strokes, plane_center, half)
     print(f"\nPlane centre: [{plane_center[0]*100:.1f}, {plane_center[1]*100:.1f}, {plane_center[2]*100:.1f}] cm")
-    print(f"Plane size: {HALF*200:.0f} × {HALF*200:.0f} cm")
+    print(f"Plane size: {half*200:.0f} × {half*200:.0f} cm  (DRAW_SCALE={DRAW_SCALE})")
     print(f"Path: {len(path)} points, {len(strokes)} strokes\n")
 
     # Single-shot warning if the user_scn fills up (long drawings).
@@ -344,7 +351,7 @@ def main():
     def reset_trail():
         """Clear all user geoms and redraw just the plane outline."""
         viewer.user_scn.ngeom = 0
-        draw_plane_outline(viewer.user_scn, plane_center, HALF)
+        draw_plane_outline(viewer.user_scn, plane_center, half)
         trail_full_warned["flag"] = False
 
     def run_drawing():
@@ -364,7 +371,7 @@ def main():
     with mujoco.viewer.launch_passive(model, data,
                                        key_callback=key_callback) as viewer:
         mujoco.mj_kinematics(model, data)
-        draw_plane_outline(viewer.user_scn, plane_center, HALF)
+        draw_plane_outline(viewer.user_scn, plane_center, half)
         viewer.sync()
         print("=== Ready. SPACE = draw, 0 = sweep ===\n")
 
