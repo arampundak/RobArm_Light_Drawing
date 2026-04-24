@@ -75,13 +75,14 @@ def load_drawing(json_path):
     """Load strokes from a p5 export JSON file."""
     with open(json_path) as f:
         data = json.load(f)
-    strokes = data["strokes"]
-    total_pts = sum(len(s) for s in strokes)
+    strokes: list[list[dict[str, float]]] = data["strokes"]
+    '''A dict with "strokes" key, which is a list of strokes, where each stroke is a list of points, and each point is a dict with "x" and "y" keys.'''
+    total_pts: int = sum(len(s) for s in strokes)
     print(f"Loaded {len(strokes)} strokes, {total_pts} points from {json_path}")
     return strokes
 
 
-def test_drawing():
+def test_drawing() -> list[list[dict[str, float]]]:
     """Built-in test: a triangle + a dot in the centre."""
     print("Using built-in test drawing (triangle)")
     return [
@@ -99,7 +100,7 @@ def test_drawing():
     ]
 
 
-def strokes_to_path(strokes, plane_center, half):
+def strokes_to_path(strokes, plane_center, half) -> list[dict[str, float]]:
     """
     Convert normalized 2D strokes to 3D path points on the drawing plane.
 
