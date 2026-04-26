@@ -4,7 +4,8 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('trace_plane.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('trace_plane.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('/Users/arampundik/Documents/NYU/Y1/Spring/Code Your Way/Robotic Arm/trs_so_arm100/trace_plane.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
-      "Bash(python3 -)"
+      "Bash(python3 -)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('trace_plane.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
