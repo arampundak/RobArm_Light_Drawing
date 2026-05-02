@@ -91,11 +91,83 @@ SPEED_MOVE = 800
 ACC = 20
 
 INTER_CMD_DELAY = 0.02   # 20 ms between MOVE lines — firmware needs this
-COMMAND_DEADBAND_COUNTS = 8
-DEBUG_COMMANDS = True
+DEFAULT_COMMAND_EPSILON_COUNTS = 12
+COMMAND_EPSILON_COUNTS = {
+    "shoulder_pan":  25,
+    "shoulder_lift": 12,
+    "elbow_flex":    12,
+    "wrist_flex":    12,
+    "wrist_roll":    20,
+    "gripper":       30,
+}
+DEBUG_COMMANDS = False
+DRAIN_MOVE_RESPONSES = True
 
 BAUD       = 115200
 DEFAULT_PORT = "/dev/cu.usbmodem1101"
+
+
+# ============================================================================
+# SERIAL READBACK
+# ============================================================================
+
+def drain_serial(ser: serial.Serial) -> None:
+    """
+    Discard queued firmware replies such as OK lines from previous MOVE calls.
+    """
+    time.sleep(0.01)
+    while ser.in_waiting:
+        ser.readline()
+
+
+def read_motor_position(ser: serial.Serial, motor_id: int) -> int | None:
+    """
+    Ask the XIAO for one servo's current encoder count.
+
+    Requires xiao_recive_move.ino with READPOS support uploaded.
+    Returns None if the firmware reports an error or no POS line arrives.
+    """
+    drain_serial(ser)
+    ser.write(f"READPOS,{motor_id}\n".encode())
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        line = ser.readline().decode(errors="replace").strip()
+        if not line:
+            continue
+        parts = line.split(",")
+        if len(parts) == 3 and parts[0] == "POS" and int(parts[1]) == motor_id:
+            return int(parts[2])
+        if line.startswith("ERROR,"):
+            return None
+    return None
+
+
+def read_joint_positions(ser: serial.Serial) -> dict:
+    """
+    Read current encoder counts for all six configured servos.
+
+    Returns a dict keyed by arm_config joint name, for example:
+    {"shoulder_pan": 3270, "shoulder_lift": 1760, ...}
+    """
+    drain_serial(ser)
+    ser.write(b"READALL\n")
+
+    by_id: dict[int, int] = {}
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and len(by_id) < 6:
+        line = ser.readline().decode(errors="replace").strip()
+        if not line:
+            continue
+        parts = line.split(",")
+        if len(parts) == 3 and parts[0] == "POS":
+            by_id[int(parts[1])] = int(parts[2])
+
+    return {
+        arm_name: by_id[motor_id]
+        for _mj_name, arm_name, motor_id in MUJOCO_TO_ARM
+        if motor_id in by_id
+    }
 
 
 # ============================================================================
@@ -166,6 +238,17 @@ def pick_speed(current_counts: dict, target_counts: dict, pen_down: bool) -> int
     return SPEED_DRAW if pen_down else SPEED_MOVE
 
 
+def command_epsilon(arm_name: str) -> int:
+    """
+    Return the command deadband for one joint in encoder counts.
+
+    This compares against the last target Python sent, not live servo feedback.
+    If the new target is inside this epsilon, we skip the command because the
+    servo is already close enough to the requested target for drawing.
+    """
+    return COMMAND_EPSILON_COUNTS.get(arm_name, DEFAULT_COMMAND_EPSILON_COUNTS)
+
+
 # ============================================================================
 # SEND
 # ============================================================================
@@ -210,7 +293,7 @@ def send_joint_counts(
     for _mj_name, arm_name, motor_id in MUJOCO_TO_ARM:
         count = target_counts[arm_name]
         current = None if current_counts is None else current_counts.get(arm_name)
-        if current is not None and abs(count - current) <= COMMAND_DEADBAND_COUNTS:
+        if current is not None and abs(count - current) <= command_epsilon(arm_name):
             continue
 
         cmd = f"MOVE,{motor_id},{count},{speed},{ACC}\n"
@@ -219,6 +302,9 @@ def send_joint_counts(
         ser.write(cmd.encode())
         time.sleep(INTER_CMD_DELAY)
         sent_counts[arm_name] = count
+
+    if DRAIN_MOVE_RESPONSES:
+        drain_serial(ser)
 
     return sent_counts
 
@@ -267,6 +353,7 @@ if __name__ == "__main__":
         print("Sending home pose to real arm...")
         counts = send_joint_angles(ser, HOME_QPOS, pen_down=False)
         print("Done — arm should be in drawing home position")
+        print("Readback:", read_joint_positions(ser))
 
         try:
             input("\nPress Enter to return to rest pose (Ctrl-C to abort)... ")
@@ -275,4 +362,6 @@ if __name__ == "__main__":
         else:
             print("Sending rest pose...")
             send_joint_counts(ser, POSES["rest_pose"], pen_down=False, current_counts=counts)
+            time.sleep(1)
+            print("Readback:", read_joint_positions(ser))
             print("Done — arm at rest.")

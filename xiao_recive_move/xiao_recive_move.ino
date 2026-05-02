@@ -6,6 +6,8 @@
 // if it gets MOVE,id,pos,speed        -> given speed,        default acc (50)
 // if it gets MOVE,id,pos,speed,acc    -> given speed and acc
 // if it gets TORQUE,id,enable         -> 1 = hold position, 0 = release (free-spin)
+// if it gets READPOS,id               -> prints POS,id,current_encoder_count
+// if it gets READALL                  -> prints POS,id,current_encoder_count for ids 1..6
 // speed is in SCServo units (0..4000). 0 = max speed (jerky); ~300 = smooth.
 // acc   is in SCServo units (0..255).  0 = max acceleration (jerky); ~50 = smooth.
 // prints confirmation back
@@ -131,6 +133,36 @@ void handleTorqueCommand(String line) {
   Serial.println(enable);
 }
 
+void printMotorPosition(int motorId) {
+  int pos = st.ReadPos(motorId);
+
+  Serial.print("POS,");
+  Serial.print(motorId);
+  Serial.print(",");
+  Serial.println(pos);
+}
+
+void handleReadPosCommand(String line) {
+  int firstComma = line.indexOf(',');
+
+  if (firstComma == -1) {
+    Serial.println("ERROR,BAD_FORMAT");
+    return;
+  }
+
+  String idText = line.substring(firstComma + 1);
+  idText.trim();
+
+  int motorId = idText.toInt();
+  printMotorPosition(motorId);
+}
+
+void handleReadAllCommand() {
+  for (int motorId = 1; motorId <= 6; motorId++) {
+    printMotorPosition(motorId);
+  }
+}
+
 void loop() {
   while (Serial.available() > 0) {
     char c = Serial.read();
@@ -143,6 +175,10 @@ void loop() {
           handleMoveCommand(incomingLine);
         } else if (incomingLine.startsWith("TORQUE,")) {
           handleTorqueCommand(incomingLine);
+        } else if (incomingLine.startsWith("READPOS,")) {
+          handleReadPosCommand(incomingLine);
+        } else if (incomingLine == "READALL") {
+          handleReadAllCommand();
         } else {
           Serial.println("ERROR,UNKNOWN_COMMAND");
         }

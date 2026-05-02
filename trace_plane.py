@@ -78,6 +78,8 @@ PLANE_RADIUS  = 0.0007
 # --- Timing ---
 DRAW_SLEEP = 0.004
 MOVE_SLEEP = 0.001
+REAL_ARM_DRAW_SETTLE = 0.8
+REAL_ARM_MOVE_SETTLE = 1.0
 
 # --- Key codes ---
 GLFW_KEY_SPACE = 32
@@ -379,6 +381,7 @@ def execute_path(model, data, viewer, led_site_id: int,
                 pen_down=pt["pen_down"],
                 current_counts=current_counts,
             )
+            time.sleep(REAL_ARM_DRAW_SETTLE if pt["pen_down"] else REAL_ARM_MOVE_SETTLE)
 
 
 def sweep_workspace(model, data, viewer, led_site_id: int) -> None:
