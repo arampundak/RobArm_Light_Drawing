@@ -50,7 +50,7 @@ Path     = list[Waypoint]     # full ordered list of 3D targets for the arm
 SCENE_XML = os.path.join(os.path.dirname(__file__), "scene.xml")
 
 # --- Real arm serial bridge ---
-RUN_REAL_ARM = True   # set False for simulation only
+RUN_REAL_ARM = False   # set False for simulation only
 ARM_PORT     = "/dev/cu.usbmodem1101"
 ARM_BAUD     = 115200
 
