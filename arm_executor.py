@@ -65,6 +65,12 @@ MUJOCO_RANGES = {
 # Quick lookup: MuJoCo name → arm_config name.
 _MJ_TO_ARM_NAME = {mj: arm for (mj, arm, _) in MUJOCO_TO_ARM}
 
+# Per-joint offsets for aligning MuJoCo's radian frame to the physical arm.
+# The shoulder pan's drawing-home qpos should be the real arm's middle count.
+MUJOCO_CENTER_QPOS = {
+    "Rotation": -0.0576,
+}
+
 
 # ============================================================================
 # SPEED
@@ -77,14 +83,15 @@ _MJ_TO_ARM_NAME = {mj: arm for (mj, arm, _) in MUJOCO_TO_ARM}
 #     shoulder_lift is descending, since gravity makes a slow descent
 #     oscillate / stall.
 
-SPEED_DRAW = 600
-SPEED_MOVE = 1500
+SPEED_DRAW = 300
+SPEED_MOVE = 800
 
 # SCServo acceleration (0..255). 0 = instant (jerky), ~50 = moderate ramp.
 # Lower this if motors still ring/jitter — try 30 then 20.
-ACC = 50
+ACC = 20
 
 INTER_CMD_DELAY = 0.02   # 20 ms between MOVE lines — firmware needs this
+COMMAND_DEADBAND_COUNTS = 8
 
 BAUD       = 115200
 DEFAULT_PORT = "/dev/cu.usbmodem1101"
@@ -118,6 +125,13 @@ def radians_to_counts(mujoco_name: str, angle_rad: float) -> int:
 
     t = (angle_clamped - rad_min) / (rad_max - rad_min)
     count = cnt_min + t * (cnt_max - cnt_min)
+    if mujoco_name in MUJOCO_CENTER_QPOS:
+        center_qpos = MUJOCO_CENTER_QPOS[mujoco_name]
+        center_qpos = max(rad_min, min(rad_max, center_qpos))
+        center_t = (center_qpos - rad_min) / (rad_max - rad_min)
+        center_count = cnt_min + center_t * (cnt_max - cnt_min)
+        count += cal["neutral"] - center_count
+    count = max(cnt_min, min(cnt_max, count))
     return int(round(count))
 
 
@@ -189,14 +203,21 @@ def send_joint_counts(
     else:
         speed = pick_speed(current_counts, target_counts, pen_down)
 
+    sent_counts = {} if current_counts is None else current_counts.copy()
+
     # Fire the MOVE lines, one per joint, with the mandatory inter-cmd gap.
     for _mj_name, arm_name, motor_id in MUJOCO_TO_ARM:
         count = target_counts[arm_name]
+        current = None if current_counts is None else current_counts.get(arm_name)
+        if current is not None and abs(count - current) <= COMMAND_DEADBAND_COUNTS:
+            continue
+
         cmd = f"MOVE,{motor_id},{count},{speed},{ACC}\n"
         ser.write(cmd.encode())
         time.sleep(INTER_CMD_DELAY)
+        sent_counts[arm_name] = count
 
-    return target_counts
+    return sent_counts
 
 
 def send_joint_angles(

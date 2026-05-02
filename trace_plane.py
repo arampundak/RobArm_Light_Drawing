@@ -50,7 +50,7 @@ Path     = list[Waypoint]     # full ordered list of 3D targets for the arm
 SCENE_XML = os.path.join(os.path.dirname(__file__), "scene.xml")
 
 # --- Real arm serial bridge ---
-RUN_REAL_ARM = False   # set False for simulation only
+RUN_REAL_ARM = True   # set False for simulation only
 ARM_PORT     = "/dev/cu.usbmodem1101"
 ARM_BAUD     = 115200
 
@@ -366,16 +366,18 @@ def execute_path(model, data, viewer, led_site_id: int,
         path_points: list of waypoints to visit
         arm_ser: optional open serial connection to the real arm
     """
+    current_counts = None
     for i, pt in enumerate(path_points):
         target = np.array([pt["x"], pt["y"], pt["z"]])
         label  = f"pt{i+1}/{len(path_points)}"
         move_to_target(model, data, viewer, led_site_id,
                        target, label, pen_down=pt["pen_down"])
         if arm_ser is not None:
-            arm_executor.send_joint_angles(
+            current_counts = arm_executor.send_joint_angles(
                 arm_ser,
                 data.qpos[:6].tolist(),
                 pen_down=pt["pen_down"],
+                current_counts=current_counts,
             )
 
 
