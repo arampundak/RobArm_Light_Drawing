@@ -2,10 +2,12 @@
 // works well with wave_hello.py in 20260502 folder. motor 1 is shaking but we took care of it
 // What this does
 // waits for a line from Python
-// if it gets MOVE,id,pos          -> moves that servo at default speed (300)
-// if it gets MOVE,id,pos,speed    -> moves that servo at the given speed
-// if it gets TORQUE,id,enable     -> 1 = hold position, 0 = release (free-spin)
+// if it gets MOVE,id,pos              -> default speed (300), default acc (50)
+// if it gets MOVE,id,pos,speed        -> given speed,        default acc (50)
+// if it gets MOVE,id,pos,speed,acc    -> given speed and acc
+// if it gets TORQUE,id,enable         -> 1 = hold position, 0 = release (free-spin)
 // speed is in SCServo units (0..4000). 0 = max speed (jerky); ~300 = smooth.
+// acc   is in SCServo units (0..255).  0 = max acceleration (jerky); ~50 = smooth.
 // prints confirmation back
 
 
@@ -43,26 +45,36 @@ void handleMoveCommand(String line) {
     return;
   }
 
-  // Optional fourth field (speed). thirdComma == -1 means it was omitted.
-  int thirdComma = line.indexOf(',', secondComma + 1);
+  // Optional fourth field (speed). thirdComma == -1 means speed was omitted.
+  int thirdComma  = line.indexOf(',', secondComma + 1);
+  // Optional fifth field (acc).   fourthComma == -1 means acc was omitted.
+  int fourthComma = (thirdComma == -1) ? -1 : line.indexOf(',', thirdComma + 1);
 
   String command = line.substring(0, firstComma);
   String idText  = line.substring(firstComma + 1, secondComma);
   String posText;
   String speedText;
+  String accText;
 
   if (thirdComma == -1) {
     posText   = line.substring(secondComma + 1);
     speedText = "";
-  } else {
+    accText   = "";
+  } else if (fourthComma == -1) {
     posText   = line.substring(secondComma + 1, thirdComma);
     speedText = line.substring(thirdComma + 1);
+    accText   = "";
+  } else {
+    posText   = line.substring(secondComma + 1, thirdComma);
+    speedText = line.substring(thirdComma + 1, fourthComma);
+    accText   = line.substring(fourthComma + 1);
   }
 
   command.trim();
   idText.trim();
   posText.trim();
   speedText.trim();
+  accText.trim();
 
   if (command != "MOVE") {
     Serial.println("ERROR,UNKNOWN_COMMAND");
@@ -72,19 +84,25 @@ void handleMoveCommand(String line) {
   int motorId   = idText.toInt();
   int targetPos = posText.toInt();
   int speed     = (speedText.length() == 0) ? 300 : speedText.toInt();
+  int acc       = (accText.length()   == 0) ? 50  : accText.toInt();
 
   // Clamp speed to the SCServo range (0..4000). 0 = max speed.
   if (speed < 0)    speed = 0;
   if (speed > 4000) speed = 4000;
+  // Clamp acc to the SCServo range (0..255). 0 = max acceleration.
+  if (acc < 0)   acc = 0;
+  if (acc > 255) acc = 255;
 
-  st.WritePosEx(motorId, targetPos, speed, 50);
+  st.WritePosEx(motorId, targetPos, speed, acc);
 
   Serial.print("OK,");
   Serial.print(motorId);
   Serial.print(",");
   Serial.print(targetPos);
   Serial.print(",");
-  Serial.println(speed);
+  Serial.print(speed);
+  Serial.print(",");
+  Serial.println(acc);
 }
 
 void handleTorqueCommand(String line) {

@@ -24,9 +24,11 @@ import sys
 import time
 from dataclasses import dataclass
 
+import arm_executor
 import mujoco
 import mujoco.viewer
 import numpy as np
+import serial
 
 
 # ============================================================================
@@ -46,6 +48,11 @@ Path     = list[Waypoint]     # full ordered list of 3D targets for the arm
 
 # --- Paths ---
 SCENE_XML = os.path.join(os.path.dirname(__file__), "scene.xml")
+
+# --- Real arm serial bridge ---
+RUN_REAL_ARM = True   # set False for simulation only
+ARM_PORT     = "/dev/cu.usbmodem1101"
+ARM_BAUD     = 115200
 
 # --- Home pose ---
 HOME_QPOS = [-0.0576, -2.03, 0.837, 1.08, 0.0837, 0.0]
@@ -346,7 +353,8 @@ def move_to_target(model, data, viewer, led_site_id: int,
     return False
 
 
-def execute_path(model, data, viewer, led_site_id: int, path_points: Path) -> None:
+def execute_path(model, data, viewer, led_site_id: int,
+                 path_points: Path, arm_ser=None) -> None:
     """
     Drive the arm through every waypoint of a path in order.
 
@@ -356,12 +364,19 @@ def execute_path(model, data, viewer, led_site_id: int, path_points: Path) -> No
         viewer: passive viewer
         led_site_id: id of the led_tip site
         path_points: list of waypoints to visit
+        arm_ser: optional open serial connection to the real arm
     """
     for i, pt in enumerate(path_points):
         target = np.array([pt["x"], pt["y"], pt["z"]])
         label  = f"pt{i+1}/{len(path_points)}"
         move_to_target(model, data, viewer, led_site_id,
                        target, label, pen_down=pt["pen_down"])
+        if arm_ser is not None:
+            arm_executor.send_joint_angles(
+                arm_ser,
+                data.qpos[:6].tolist(),
+                pen_down=pt["pen_down"],
+            )
 
 
 def sweep_workspace(model, data, viewer, led_site_id: int) -> None:
@@ -415,7 +430,8 @@ def reset_trail(viewer, plane_center: np.ndarray, half: float) -> None:
 
 
 def run_drawing(model, data, viewer, led_site_id: int,
-                plane_center: np.ndarray, half: float, path: Path) -> None:
+                plane_center: np.ndarray, half: float, path: Path,
+                arm_ser=None) -> None:
     """
     Reset the arm to home, clear the trail, and execute the full path.
 
@@ -427,6 +443,7 @@ def run_drawing(model, data, viewer, led_site_id: int,
         plane_center: 3D plane centre (used by reset_trail)
         half: plane half-size (used by reset_trail)
         path: list of waypoints to draw
+        arm_ser: optional open serial connection to the real arm
     """
     data.qpos[:6] = HOME_QPOS
     data.ctrl[:6] = HOME_QPOS[:]
@@ -435,7 +452,7 @@ def run_drawing(model, data, viewer, led_site_id: int,
     viewer.sync()
 
     print("\n=== Drawing start ===\n")
-    execute_path(model, data, viewer, led_site_id, path)
+    execute_path(model, data, viewer, led_site_id, path, arm_ser=arm_ser)
     print("\n=== Drawing complete. SPACE to replay. ===\n")
 
 
@@ -503,6 +520,12 @@ def main():
     model, data, led_site_id = setup_model()
     led_pos = data.site_xpos[led_site_id].copy()
 
+    arm_ser = None
+    if RUN_REAL_ARM:
+        arm_ser = serial.Serial(ARM_PORT, ARM_BAUD, timeout=2)
+        import time as _t; _t.sleep(2)
+        print("Real arm connected")
+
     # Apply the scale factor so both the plane outline and stroke mapping grow.
     half = HALF * DRAW_SCALE
     plane_center = compute_plane(led_pos, half)
@@ -523,24 +546,28 @@ def main():
         if keycode == GLFW_KEY_0:
             state.sweep_requested = True
 
-    with mujoco.viewer.launch_passive(model, data,
-                                       key_callback=key_callback) as viewer:
-        mujoco.mj_kinematics(model, data)
-        draw_plane_outline(viewer.user_scn, plane_center, half)
-        viewer.sync()
-        print("=== Ready. SPACE = draw, 0 = sweep ===\n")
+    try:
+        with mujoco.viewer.launch_passive(model, data,
+                                          key_callback=key_callback) as viewer:
+            mujoco.mj_kinematics(model, data)
+            draw_plane_outline(viewer.user_scn, plane_center, half)
+            viewer.sync()
+            print("=== Ready. SPACE = draw, 0 = sweep ===\n")
 
-        while viewer.is_running():
-            if state.run_requested:
-                state.run_requested = False
-                run_drawing(model, data, viewer, led_site_id,
-                            plane_center, half, path)
-            elif state.sweep_requested:
-                state.sweep_requested = False
-                sweep_workspace(model, data, viewer, led_site_id)
-            else:
-                mujoco.mj_kinematics(model, data)
-                viewer.sync()
+            while viewer.is_running():
+                if state.run_requested:
+                    state.run_requested = False
+                    run_drawing(model, data, viewer, led_site_id,
+                                plane_center, half, path, arm_ser=arm_ser)
+                elif state.sweep_requested:
+                    state.sweep_requested = False
+                    sweep_workspace(model, data, viewer, led_site_id)
+                else:
+                    mujoco.mj_kinematics(model, data)
+                    viewer.sync()
+    finally:
+        if arm_ser is not None:
+            arm_ser.close()
 
 
 if __name__ == "__main__":
