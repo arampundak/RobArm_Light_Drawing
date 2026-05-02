@@ -92,6 +92,7 @@ ACC = 20
 
 INTER_CMD_DELAY = 0.02   # 20 ms between MOVE lines — firmware needs this
 COMMAND_DEADBAND_COUNTS = 8
+DEBUG_COMMANDS = True
 
 BAUD       = 115200
 DEFAULT_PORT = "/dev/cu.usbmodem1101"
@@ -213,6 +214,8 @@ def send_joint_counts(
             continue
 
         cmd = f"MOVE,{motor_id},{count},{speed},{ACC}\n"
+        if DEBUG_COMMANDS and motor_id == 1:
+            print(f"[arm] motor 1 -> {count}  speed={speed} acc={ACC}")
         ser.write(cmd.encode())
         time.sleep(INTER_CMD_DELAY)
         sent_counts[arm_name] = count
