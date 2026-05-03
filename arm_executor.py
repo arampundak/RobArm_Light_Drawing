@@ -83,12 +83,12 @@ MUJOCO_CENTER_QPOS = {
 #     shoulder_lift is descending, since gravity makes a slow descent
 #     oscillate / stall.
 
-SPEED_DRAW = 300
-SPEED_MOVE = 800
+SPEED_DRAW = 2500
+SPEED_MOVE = 2500
 
 # SCServo acceleration (0..255). 0 = instant (jerky), ~50 = moderate ramp.
 # Lower this if motors still ring/jitter — try 30 then 20.
-ACC = 20
+ACC = 500
 
 INTER_CMD_DELAY = 0.02   # 20 ms between MOVE lines — firmware needs this
 COMMAND_DEADBAND_COUNTS = 8
