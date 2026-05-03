@@ -250,27 +250,281 @@ def send_joint_angles(
 
 
 # ============================================================================
-# TEST
+# READ
+# ============================================================================
+
+def enable_torque(ser: serial.Serial, motor_id: int, enable: bool = True) -> bool:
+    """
+    Send TORQUE,id,enable to the firmware and wait for the OK ack.
+
+    SCServo torque state is sticky across XIAO reboots — it only resets when
+    the servo itself loses 12 V. If a previous session disabled torque on a
+    joint (e.g. to free-spin it for calibration), WritePosEx will silently
+    no-op until torque is re-enabled. Call this on every motor at startup
+    to make sure the arm is actually holding.
+
+    Args:
+        ser: open pyserial connection to the XIAO
+        motor_id: SCServo bus ID (1..6)
+        enable: True = hold position, False = release (free-spin)
+    Returns:
+        True if the firmware acknowledged within 1 s, False on timeout.
+    """
+    ser.reset_input_buffer()
+    ser.write(f"TORQUE,{motor_id},{1 if enable else 0}\n".encode())
+    old_timeout = ser.timeout
+    ser.timeout = 1.0
+    try:
+        for _ in range(8):
+            line = ser.readline().decode(errors="ignore").strip()
+            if not line:
+                break
+            if line.startswith(f"OK,TORQUE,{motor_id},"):
+                return True
+    finally:
+        ser.timeout = old_timeout
+    return False
+
+
+def read_joint(ser: serial.Serial, motor_id: int, timeout_s: float = 1.0) -> dict | None:
+    """
+    Query a single servo for position, load, voltage, and temperature.
+
+    Sends READ,id\\n and parses the firmware's
+    OK,READ,id,pos,load,volt_dV,temp_C line. Drains stale bytes first so
+    leftover MOVE acks don't get confused with the read response.
+
+    Args:
+        ser: open pyserial connection to the XIAO
+        motor_id: SCServo bus ID (1..6)
+        timeout_s: max seconds to wait for the response line
+    Returns:
+        dict {"pos", "load", "volt", "temp"} as ints, or None if the servo
+        did not answer (firmware returns -1 from ReadPos on bus failure).
+    """
+    ser.reset_input_buffer()
+    ser.write(f"READ,{motor_id}\n".encode())
+
+    old_timeout = ser.timeout
+    ser.timeout = timeout_s
+    try:
+        # The firmware may emit other lines first (stale OK from MOVEs,
+        # READY on boot). Skim a few lines looking for our specific match.
+        for _ in range(8):
+            line = ser.readline().decode(errors="ignore").strip()
+            if not line:
+                break
+            if not line.startswith(f"OK,READ,{motor_id},"):
+                continue
+            parts = line.split(",")
+            if len(parts) != 7:
+                continue
+            try:
+                pos  = int(parts[3])
+                load = int(parts[4])
+                volt = int(parts[5])
+                temp = int(parts[6])
+            except ValueError:
+                continue
+            if pos == -1:
+                return None
+            return {"pos": pos, "load": load, "volt": volt, "temp": temp}
+    finally:
+        ser.timeout = old_timeout
+    return None
+
+
+def read_limits(ser: serial.Serial, motor_id: int, timeout_s: float = 1.0) -> tuple[int, int] | None:
+    """
+    Read the EEPROM angle-limit registers from a single SMS_STS servo.
+
+    Sends LIMITS,id\\n and parses OK,LIMITS,id,min_angle,max_angle. The
+    servo silently clamps any WritePosEx target to [min_angle, max_angle],
+    so this is what to inspect when a motor stops short of its commanded
+    target with no load and no temperature trip.
+
+    Args:
+        ser: open pyserial connection to the XIAO
+        motor_id: SCServo bus ID (1..6)
+        timeout_s: max seconds to wait for the response line
+    Returns:
+        (min_angle, max_angle) tuple, or None if the servo did not answer
+        (firmware returns -1,-1 on bus failure).
+    """
+    ser.reset_input_buffer()
+    ser.write(f"LIMITS,{motor_id}\n".encode())
+
+    old_timeout = ser.timeout
+    ser.timeout = timeout_s
+    try:
+        for _ in range(8):
+            line = ser.readline().decode(errors="ignore").strip()
+            if not line:
+                break
+            if not line.startswith(f"OK,LIMITS,{motor_id},"):
+                continue
+            parts = line.split(",")
+            if len(parts) != 5:
+                continue
+            try:
+                lo = int(parts[3])
+                hi = int(parts[4])
+            except ValueError:
+                continue
+            if lo == -1 or hi == -1:
+                return None
+            return (lo, hi)
+    finally:
+        ser.timeout = old_timeout
+    return None
+
+
+# ============================================================================
+# TEST / DIAGNOSTIC
 # ============================================================================
 
 if __name__ == "__main__":
-    import serial
+    import sys
     import time
 
     HOME_QPOS = [-0.0576, -2.03, 0.837, 1.08, 0.0837, 0.0]
 
-    with serial.Serial("/dev/cu.usbmodem1101", 115200, timeout=2) as ser:
-        time.sleep(2)
+    def _read_all(ser):
+        """Return {arm_name: read_joint_result_or_None} for all 6 motors."""
+        out = {}
+        for _, arm_name, motor_id in MUJOCO_TO_ARM:
+            out[arm_name] = read_joint(ser, motor_id)
+        return out
 
-        print("Sending home pose to real arm...")
-        counts = send_joint_angles(ser, HOME_QPOS, pen_down=False)
-        print("Done — arm should be in drawing home position")
+    def _print_bus(snapshot):
+        print(f" {'id':>2} {'name':>14}   {'pos':>5}  {'load':>6}  {'V_dV':>4}  {'T_C':>3}")
+        for _, arm_name, motor_id in MUJOCO_TO_ARM:
+            r = snapshot[arm_name]
+            if r is None:
+                print(f" {motor_id:>2} {arm_name:>14}   NO RESPONSE")
+            else:
+                print(f" {motor_id:>2} {arm_name:>14}   {r['pos']:>5}  {r['load']:>6}  {r['volt']:>4}  {r['temp']:>3}")
 
+    print(f"Opening serial to {DEFAULT_PORT} @ {BAUD}")
+    with serial.Serial(DEFAULT_PORT, BAUD, timeout=1) as ser:
+        time.sleep(2)               # XIAO boot
+        ser.reset_input_buffer()    # drop the "READY" greeting
+
+        # ----- Phase 1: bus check -----------------------------------------
+        # Just read every motor. If any are missing here, no MOVE will help.
+        print("\n=== Phase 1: bus check (READ each motor) ===")
+        baseline = _read_all(ser)
+        _print_bus(baseline)
+
+        missing = [n for _, n, _ in MUJOCO_TO_ARM if baseline[n] is None]
+        if missing:
+            print(f"\nNo response from: {', '.join(missing)}")
+            print("Likely daisy-chain break, ID conflict, or that servo lost power.")
+            print("Stopping before any MOVE is sent.")
+            sys.exit(1)
+        print("All 6 motors answered.")
+
+        # Force torque ON for every motor. SCServo torque state is sticky:
+        # if anything ever sent TORQUE,id,0 to release a joint, WritePosEx
+        # would silently no-op on it until re-enabled here.
+        print("\nEnabling torque on all 6 motors...")
+        for _, arm_name, motor_id in MUJOCO_TO_ARM:
+            ok = enable_torque(ser, motor_id, True)
+            print(f"  {motor_id} {arm_name:>14}  {'OK' if ok else 'NO ACK'}")
+
+        # Read EEPROM angle limits and compare to what arm_config expects.
+        # If a servo's limit is narrower than the cal range, MOVE commands
+        # past the limit are silently clamped — looks like "motor stops short."
+        print("\nReading EEPROM angle limits...")
+        print(f" {'id':>2} {'name':>14}   {'srv_min':>7}  {'srv_max':>7}    {'cfg_min':>7}  {'cfg_max':>7}    {'verdict':>20}")
+        for _, arm_name, motor_id in MUJOCO_TO_ARM:
+            limits = read_limits(ser, motor_id)
+            cfg = CALIBRATION[arm_name]
+            cfg_lo, cfg_hi = cfg["min"], cfg["max"]
+            if limits is None:
+                print(f" {motor_id:>2} {arm_name:>14}   {'?':>7}  {'?':>7}    {cfg_lo:>7}  {cfg_hi:>7}    {'NO RESPONSE':>20}")
+                continue
+            srv_lo, srv_hi = limits
+            verdict = "ok"
+            if srv_lo > cfg_lo + 5:
+                verdict = f"min too high (+{srv_lo - cfg_lo})"
+            elif srv_hi < cfg_hi - 5:
+                verdict = f"max too low ({srv_hi - cfg_hi})"
+            print(f" {motor_id:>2} {arm_name:>14}   {srv_lo:>7}  {srv_hi:>7}    {cfg_lo:>7}  {cfg_hi:>7}    {verdict:>20}")
+
+        # ----- Phase 2: batch HOME_QPOS — reproduces the failing path ----
+        # Identical to what trace_plane and the old test did: send all six
+        # MOVEs as one batch, then look at who actually moved.
         try:
-            input("\nPress Enter to return to rest pose (Ctrl-C to abort)... ")
+            input("\n[Phase 2] Press Enter to send HOME_QPOS as a batch (Ctrl-C to abort)... ")
         except (KeyboardInterrupt, EOFError):
-            print("\nAborted — arm left in home pose.")
-        else:
-            print("Sending rest pose...")
-            send_joint_counts(ser, POSES["rest_pose"], pen_down=False, current_counts=counts)
-            print("Done — arm at rest.")
+            print("\nAborted before Phase 2.")
+            sys.exit(0)
+
+        targets = {}
+        for (mj_name, arm_name, _id), angle in zip(MUJOCO_TO_ARM, HOME_QPOS):
+            targets[arm_name] = radians_to_counts(mj_name, angle)
+
+        before = _read_all(ser)
+        send_joint_counts(ser, targets, pen_down=False)
+        print("\nSent batch — polling positions live for 15 s.")
+        print("Watching for: motors that move and stop (good), motors that don't move at all,")
+        print("and motors that move then drift backwards (gravity winning = no torque).\n")
+
+        # Header: t_s | per-motor commanded values, then live position stream.
+        names = [n for _, n, _ in MUJOCO_TO_ARM]
+        print(" cmd  " + "  ".join(f"{targets[n]:>5}" for n in names))
+        print(" t_s  " + "  ".join(f"{n[:5]:>5}" for n in names))
+        print("-" * (6 + 7 * len(names)))
+
+        start = time.time()
+        after = before
+        while True:
+            elapsed = time.time() - start
+            if elapsed > 15:
+                break
+            snap = _read_all(ser)
+            after = snap
+            cells = []
+            for n in names:
+                r = snap[n]
+                cells.append(" ----" if r is None else f"{r['pos']:>5}")
+            print(f"{elapsed:>4.1f}  " + "  ".join(cells))
+            time.sleep(0.5)
+
+        print("\n=== Phase 2 result: HOME batch MOVE ===")
+        print(f" {'id':>2} {'name':>14}  {'cmd':>5}  {'before':>6} {'after':>6}  {'delta':>6}  {'load':>6}  {'V_dV':>4}  {'T_C':>3}")
+        for _, arm_name, motor_id in MUJOCO_TO_ARM:
+            cmd = targets[arm_name]
+            b = before[arm_name]
+            a = after[arm_name]
+            b_str = "----" if b is None else f"{b['pos']:>6}"
+            a_str = "----" if a is None else f"{a['pos']:>6}"
+            if b is not None and a is not None:
+                d_str = f"{a['pos'] - b['pos']:+6d}"
+            else:
+                d_str = "   ?  "
+            l_str = "----" if a is None else f"{a['load']:>6}"
+            v_str = "----" if a is None else f"{a['volt']:>4}"
+            t_str = "----" if a is None else f"{a['temp']:>3}"
+            print(f" {motor_id:>2} {arm_name:>14}  {cmd:>5}  {b_str} {a_str}  {d_str}  {l_str}  {v_str}  {t_str}")
+
+        print("\nWhat to look for:")
+        print("  - delta ~ 0 with after far from cmd  -> command ignored or torque off")
+        print("  - delta ~ cmd-before                 -> motor obeyed the command")
+        print("  - large |load|                       -> servo straining (mech bind / overload)")
+        print("  - V_dV (deci-volts) far below ~120   -> brownout under load")
+        print("  - T_C high (>60)                     -> thermal protection may engage")
+        print("\n[Phase 3] Press Enter to send rest_pose (Ctrl-C to skip)... ", end="", flush=True)
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            print("\nDone.")
+            sys.exit(0)
+
+        send_joint_counts(ser, POSES["rest_pose"], pen_down=False)
+        time.sleep(3)
+        rest_after = _read_all(ser)
+        print("\n=== Phase 3 result: rest_pose ===")
+        _print_bus(rest_after)
+        print("Done.")

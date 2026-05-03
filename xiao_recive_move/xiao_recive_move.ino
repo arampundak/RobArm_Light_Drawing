@@ -6,6 +6,11 @@
 // if it gets MOVE,id,pos,speed        -> given speed,         default acc (500)
 // if it gets MOVE,id,pos,speed,acc    -> given speed and acc
 // if it gets TORQUE,id,enable         -> 1 = hold position, 0 = release (free-spin)
+// if it gets READ,id                  -> replies OK,READ,id,pos,load,volt_dV,temp_C
+//                                        any field can be -1 if the servo did not respond
+// if it gets LIMITS,id                -> replies OK,LIMITS,id,min_angle,max_angle
+//                                        the EEPROM angle limits — servo silently
+//                                        clamps WritePosEx targets to this range
 // speed is reversed on these servos: 0 = fastest/jerkiest, 4000 = slowest.
 // These values worked well in testing: st.WritePosEx(id, pos, 2500, 500).
 // prints confirmation back
@@ -60,6 +65,14 @@ void loop()
         else if (incomingLine.startsWith("TORQUE,"))
         {
           handleTorqueCommand(incomingLine);
+        }
+        else if (incomingLine.startsWith("READ,"))
+        {
+          handleReadCommand(incomingLine);
+        }
+        else if (incomingLine.startsWith("LIMITS,"))
+        {
+          handleLimitsCommand(incomingLine);
         }
         else
         {
@@ -183,4 +196,78 @@ void handleTorqueCommand(String line)
   Serial.print(motorId);
   Serial.print(",");
   Serial.println(enable);
+}
+
+void handleReadCommand(String line)
+{
+  int firstComma = line.indexOf(',');
+  if (firstComma == -1)
+  {
+    Serial.println("ERROR,BAD_FORMAT");
+    return;
+  }
+
+  String idText = line.substring(firstComma + 1);
+  idText.trim();
+  int motorId = idText.toInt();
+
+  // SCServo SDK returns -1 on bus failure for any of these. Caller treats
+  // pos == -1 as "this motor did not answer."
+  int pos  = st.ReadPos(motorId);
+  int load = st.ReadLoad(motorId);
+  int volt = st.ReadVoltage(motorId);
+  int temp = st.ReadTemper(motorId);
+
+  Serial.print("OK,READ,");
+  Serial.print(motorId);
+  Serial.print(",");
+  Serial.print(pos);
+  Serial.print(",");
+  Serial.print(load);
+  Serial.print(",");
+  Serial.print(volt);
+  Serial.print(",");
+  Serial.println(temp);
+}
+
+void handleLimitsCommand(String line)
+{
+  // LIMITS,id  -> reads the SMS_STS angle-limit registers from EEPROM:
+  //   0x09/0x0A = MIN_ANGLE_LIMIT (16-bit, little endian)
+  //   0x0B/0x0C = MAX_ANGLE_LIMIT (16-bit, little endian)
+  // The servo silently clamps any WritePosEx target to this range,
+  // so a wrong value here looks like "the motor stops short."
+  int firstComma = line.indexOf(',');
+  if (firstComma == -1)
+  {
+    Serial.println("ERROR,BAD_FORMAT");
+    return;
+  }
+
+  String idText = line.substring(firstComma + 1);
+  idText.trim();
+  int motorId = idText.toInt();
+
+  int minL = st.readByte(motorId, 9);
+  int minH = st.readByte(motorId, 10);
+  int maxL = st.readByte(motorId, 11);
+  int maxH = st.readByte(motorId, 12);
+
+  if (minL < 0 || minH < 0 || maxL < 0 || maxH < 0)
+  {
+    Serial.print("OK,LIMITS,");
+    Serial.print(motorId);
+    Serial.println(",-1,-1");
+    return;
+  }
+
+  int minLimit = (minL & 0xFF) | ((minH & 0xFF) << 8);
+  int maxLimit = (maxL & 0xFF) | ((maxH & 0xFF) << 8);
+
+  Serial.print("OK,LIMITS,");
+  Serial.print(motorId);
+  Serial.print(",");
+  Serial.print(minLimit);
+  Serial.print(",");
+  Serial.println(maxLimit);
 }
