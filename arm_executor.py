@@ -76,7 +76,9 @@ MUJOCO_CENTER_QPOS = {
 # SPEED
 # ============================================================================
 #
-# SCServo speed units (0..4000). 0 = max (jerky), ~300 = very smooth.
+# SCServo speed units are effectively reversed on these servos:
+#   0 = fastest / harshest, 4000 = slowest.
+# Testing showed 2500 is the smooth working value for this arm.
 # We use two regimes:
 #   • DRAW — slow, for pen-down strokes (horizontal / upward moves)
 #   • MOVE — faster, for pen-up repositioning. Also forced when the
@@ -86,8 +88,7 @@ MUJOCO_CENTER_QPOS = {
 SPEED_DRAW = 2500
 SPEED_MOVE = 2500
 
-# SCServo acceleration (0..255). 0 = instant (jerky), ~50 = moderate ramp.
-# Lower this if motors still ring/jitter — try 30 then 20.
+# Testing showed st.WritePosEx(..., 2500, 500) is smooth on this arm.
 ACC = 500
 
 INTER_CMD_DELAY = 0.02   # 20 ms between MOVE lines — firmware needs this

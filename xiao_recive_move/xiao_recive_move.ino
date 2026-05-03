@@ -1,13 +1,13 @@
 // created 20260502
-// works well with wave_hello.py in 20260502 folder. motor 1 is shaking but we took care of it
+// works well with wave_hello.py in 20260502 folder. took care of shaking
 // What this does
 // waits for a line from Python
-// if it gets MOVE,id,pos              -> default speed (300), default acc (50)
-// if it gets MOVE,id,pos,speed        -> given speed,        default acc (50)
+// if it gets MOVE,id,pos              -> default speed (2500), default acc (500)
+// if it gets MOVE,id,pos,speed        -> given speed,         default acc (500)
 // if it gets MOVE,id,pos,speed,acc    -> given speed and acc
 // if it gets TORQUE,id,enable         -> 1 = hold position, 0 = release (free-spin)
-// speed is in SCServo units (0..4000). 0 = max speed (jerky); ~300 = smooth.
-// acc   is in SCServo units (0..255).  0 = max acceleration (jerky); ~50 = smooth.
+// speed is reversed on these servos: 0 = fastest/jerkiest, 4000 = slowest.
+// These values worked well in testing: st.WritePosEx(id, pos, 2500, 500).
 // prints confirmation back
 
 #include <SCServo.h>
@@ -25,6 +25,9 @@ SMS_STS st;
 
 String incomingLine = "";
 
+#define DEFAULT_SPEED 2500
+#define DEFAULT_ACC 500
+
 void setup()
 {
   Serial.begin(115200);
@@ -40,46 +43,37 @@ void setup()
 
 void loop()
 {
-
-  int positions[] = {3270, 3485, 3270, 3074};
-  for(int i=0; i<4000; i++)
+  while (Serial.available() > 0)
   {
-      int targetPos = positions[step];
-    st.WritePosEx(1, targetPos, i, 20);
-      step = (step + 1) % 4;
+    char c = Serial.read();
 
-    delay(1000);
+    if (c == '\n')
+    {
+      incomingLine.trim();
+
+      if (incomingLine.length() > 0)
+      {
+        if (incomingLine.startsWith("MOVE,"))
+        {
+          handleMoveCommand(incomingLine);
+        }
+        else if (incomingLine.startsWith("TORQUE,"))
+        {
+          handleTorqueCommand(incomingLine);
+        }
+        else
+        {
+          Serial.println("ERROR,UNKNOWN_COMMAND");
+        }
+      }
+
+      incomingLine = "";
+    }
+    else
+    {
+      incomingLine += c;
+    }
   }
-  
-
-}
-
-void handleTorqueCommand(String line)
-{
-  int firstComma = line.indexOf(',');
-  int secondComma = line.indexOf(',', firstComma + 1);
-
-  if (firstComma == -1 || secondComma == -1)
-  {
-    Serial.println("ERROR,BAD_FORMAT");
-    return;
-  }
-
-  String idText = line.substring(firstComma + 1, secondComma);
-  String enableText = line.substring(secondComma + 1);
-  idText.trim();
-  enableText.trim();
-
-  int motorId = idText.toInt();
-  int enable = enableText.toInt();
-
-  // 1 = torque on (servo holds position), 0 = torque off (joint spins freely).
-  st.EnableTorque(motorId, enable ? 1 : 0);
-
-  Serial.print("OK,TORQUE,");
-  Serial.print(motorId);
-  Serial.print(",");
-  Serial.println(enable);
 }
 
 void handleMoveCommand(String line)
@@ -137,19 +131,19 @@ void handleMoveCommand(String line)
 
   int motorId = idText.toInt();
   int targetPos = posText.toInt();
-  int speed = (speedText.length() == 0) ? 300 : speedText.toInt();
-  int acc = (accText.length() == 0) ? 50 : accText.toInt();
+  int speed = (speedText.length() == 0) ? DEFAULT_SPEED : speedText.toInt();
+  int acc = (accText.length() == 0) ? DEFAULT_ACC : accText.toInt();
 
-  // Clamp speed to the SCServo range (0..4000). 0 = max speed.
+  // Clamp speed to the SCServo range (0..4000). 0 is fastest, 4000 is slowest.
   if (speed < 0)
     speed = 0;
   if (speed > 4000)
     speed = 4000;
-  // Clamp acc to the SCServo range (0..255). 0 = max acceleration.
+
+  // Do not cap acc at 255 here: direct st.WritePosEx(..., 500) was tested
+  // and works best for this arm, so preserve the caller's value.
   if (acc < 0)
     acc = 0;
-  if (acc > 255)
-    acc = 255;
 
   st.WritePosEx(motorId, targetPos, speed, acc);
 
@@ -161,4 +155,32 @@ void handleMoveCommand(String line)
   Serial.print(speed);
   Serial.print(",");
   Serial.println(acc);
+}
+
+void handleTorqueCommand(String line)
+{
+  int firstComma = line.indexOf(',');
+  int secondComma = line.indexOf(',', firstComma + 1);
+
+  if (firstComma == -1 || secondComma == -1)
+  {
+    Serial.println("ERROR,BAD_FORMAT");
+    return;
+  }
+
+  String idText = line.substring(firstComma + 1, secondComma);
+  String enableText = line.substring(secondComma + 1);
+  idText.trim();
+  enableText.trim();
+
+  int motorId = idText.toInt();
+  int enable = enableText.toInt();
+
+  // 1 = torque on (servo holds position), 0 = release.
+  st.EnableTorque(motorId, enable ? 1 : 0);
+
+  Serial.print("OK,TORQUE,");
+  Serial.print(motorId);
+  Serial.print(",");
+  Serial.println(enable);
 }
